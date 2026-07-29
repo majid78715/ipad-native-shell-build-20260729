@@ -212,9 +212,10 @@ jobs:
             done
             test "$SMOKE" = "PASS"
             kill -0 "$APP_PID"
-            xcrun simctl io "$UDID" screenshot \
-              build/artifacts/generic-shell-simulator.png
-            test -s build/artifacts/generic-shell-simulator.png
+            SCREENSHOT="$PWD/build/artifacts/generic-shell-simulator.png"
+            mkdir -p "$(dirname "$SCREENSHOT")"
+            xcrun simctl io "$UDID" screenshot "$SCREENSHOT"
+            test -s "$SCREENSHOT"
 
       - run:
           name: Build and validate the unsigned physical-iPad shell
