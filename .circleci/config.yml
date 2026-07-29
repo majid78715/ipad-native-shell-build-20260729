@@ -89,8 +89,12 @@ jobs:
           name: Verify toolchain and install exact native packages
           command: |
             set -euo pipefail
-            xcodebuild -version
-            xcodebuild -version | grep -Eq '^Xcode 26\.4'
+            XCODE_VERSION="$(xcodebuild -version)"
+            printf '%s\n' "$XCODE_VERSION"
+            if [[ ! "$XCODE_VERSION" =~ ^Xcode[[:space:]]26\.4(\.|$) ]]; then
+              echo "Expected Xcode 26.4.x, got: $XCODE_VERSION" >&2
+              exit 1
+            fi
             nvm install 22
             nvm use 22
             node --version
