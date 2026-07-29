@@ -1,0 +1,28 @@
+{
+	"appId": "com.majid.tradingplatform.ipad",
+	"appName": "Trading Platform",
+	"webDir": "dist",
+	"backgroundColor": "#050505",
+	"server": {
+		"iosScheme": "capacitor"
+	},
+	"ios": {
+		"contentInset": "never",
+		"preferredContentMode": "mobile",
+		"allowsLinkPreview": false,
+		"scrollEnabled": false
+	},
+	"plugins": {
+		"CapacitorCookies": {
+			"enabled": true
+		},
+		"CapacitorHttp": {
+			"enabled": true
+		}
+	},
+	"packageClassList": [
+		"KeepAwakePlugin",
+		"AppPlugin",
+		"PreferencesPlugin"
+	]
+}

@@ -1,0 +1,12 @@
+node_modules/
+build/
+DerivedData/
+*.ipa
+*.app
+*.map
+*.mobileprovision
+*.p12
+*.cer
+*.key
+*.log
+.DS_Store

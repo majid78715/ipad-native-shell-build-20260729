@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Generic Shell Test</title>
+    <style>
+      :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #050505; color: #fff; }
+      main { width: min(680px, calc(100vw - 64px)); padding: 32px; border: 1px solid #243044; border-radius: 20px; }
+      h1 { margin-top: 0; }
+      #status { color: #9ca3af; white-space: pre-line; }
+      .pass { color: #34d399 !important; }
+      .fail { color: #fb7185 !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Generic iPad Shell</h1>
+      <p id="status">Checking the native bridge...</p>
+    </main>
+    <script>
+      (async () => {
+        const status = document.getElementById("status");
+        const resultKey = "generic-shell-smoke-result";
+        try {
+          const capacitor = globalThis.Capacitor;
+          if (!capacitor || capacitor.getPlatform() !== "ios") {
+            throw new Error("Capacitor iOS bridge unavailable");
+          }
+          const plugins = capacitor.Plugins;
+          const required = [
+            "App",
+            "Preferences",
+            "KeepAwake",
+            "CapacitorCookies",
+            "CapacitorHttp",
+          ];
+          for (const name of required) {
+            if (!plugins[name]) throw new Error(`${name} unavailable`);
+          }
+          await plugins.Preferences.set({ key: resultKey, value: "RUNNING" });
+          const running = await plugins.Preferences.get({ key: resultKey });
+          if (running.value !== "RUNNING") throw new Error("Preferences round-trip failed");
+          const info = await plugins.App.getInfo();
+          if (info?.id !== "com.majid.tradingplatform.ipad") {
+            throw new Error("App metadata unavailable");
+          }
+          await plugins.KeepAwake.keepAwake();
+          await plugins.KeepAwake.allowSleep();
+          const cookieUrl = "https://example.com/";
+          await plugins.CapacitorCookies.setCookie({
+            url: cookieUrl,
+            key: "generic-shell-smoke",
+            value: "pass",
+            path: "/",
+          });
+          const cookies = await plugins.CapacitorCookies.getCookies({ url: cookieUrl });
+          if (cookies["generic-shell-smoke"] !== "pass") {
+            throw new Error("Native cookies unavailable");
+          }
+          await plugins.CapacitorCookies.deleteCookie({
+            url: cookieUrl,
+            key: "generic-shell-smoke",
+          });
+          let response;
+          let httpError;
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+              response = await plugins.CapacitorHttp.get({
+                url: cookieUrl,
+                connectTimeout: 10000,
+              });
+              if (response.status === 200) break;
+              httpError = new Error(`Native HTTP returned ${response.status}`);
+            } catch (error) {
+              httpError = error;
+            }
+          }
+          if (response?.status !== 200) throw httpError ?? new Error("Native HTTP failed");
+          await plugins.Preferences.set({ key: resultKey, value: "PASS" });
+          status.textContent = "PASS - native bridge and plugins are ready.";
+          status.className = "pass";
+          document.title = "SHELL_SMOKE_PASS";
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          try {
+            await globalThis.Capacitor?.Plugins?.Preferences?.set({
+              key: resultKey,
+              value: `FAIL:${message}`,
+            });
+          } catch {}
+          status.textContent = `FAIL - ${message}`;
+          status.className = "fail";
+          document.title = "SHELL_SMOKE_FAIL";
+        }
+      })();
+    </script>
+  </body>
+</html>

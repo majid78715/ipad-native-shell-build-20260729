@@ -1,0 +1,434 @@
+name: Build Generic iPad Shell
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: generic-ipad-shell-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.actor == 'majid78715' && github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out generic shell
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Prove repository contains only the generic native shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          files = subprocess.check_output(
+              ["git", "ls-files", "-z"],
+          ).decode().split("\0")
+          files = [path for path in files if path]
+          allowed_exact = {
+              ".github/workflows/build-shell.yml",
+              ".gitignore",
+              "README.md",
+              "app/ios/App/App.xcodeproj/project.pbxproj",
+              "app/ios/App/App.xcodeproj/project.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist",
+              "app/ios/App/App/AppDelegate.swift",
+              "app/ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png",
+              "app/ios/App/App/Assets.xcassets/AppIcon.appiconset/Contents.json",
+              "app/ios/App/App/Assets.xcassets/Contents.json",
+              "app/ios/App/App/Assets.xcassets/Splash.imageset/Contents.json",
+              "app/ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732.png",
+              "app/ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732-1.png",
+              "app/ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732-2.png",
+              "app/ios/App/App/Base.lproj/LaunchScreen.storyboard",
+              "app/ios/App/App/Base.lproj/Main.storyboard",
+              "app/ios/App/App/capacitor.config.json",
+              "app/ios/App/App/config.xml",
+              "app/ios/App/App/Info.plist",
+              "app/ios/App/App/PrivacyInfo.xcprivacy",
+              "app/ios/App/App/public/cordova.js",
+              "app/ios/App/App/public/cordova_plugins.js",
+              "app/ios/App/App/public/index.html",
+              "app/ios/App/CapApp-SPM/Package.swift",
+              "app/ios/App/CapApp-SPM/Sources/CapApp-SPM/CapApp-SPM.swift",
+              "app/ios/debug.xcconfig",
+              "app/package.json",
+              "app/package-lock.json",
+          }
+          forbidden_parts = {
+              "dist",
+              "engine",
+              "node_modules",
+              "qa",
+              "reference",
+              "src",
+          }
+          for relative in files:
+              path = Path(relative)
+              if relative not in allowed_exact:
+                  raise SystemExit(f"Unexpected public path: {relative}")
+              if any(part.lower() in forbidden_parts for part in path.parts):
+                  raise SystemExit(f"Forbidden public path: {relative}")
+              if path.suffix.lower() in {".map", ".ts", ".tsx"}:
+                  raise SystemExit(f"Forbidden public source artifact: {relative}")
+          total = sum(Path(path).stat().st_size for path in files)
+          if set(files) != allowed_exact:
+              missing = sorted(allowed_exact - set(files))
+              extra = sorted(set(files) - allowed_exact)
+              raise SystemExit(f"Public shell allowlist mismatch: missing={missing} extra={extra}")
+          if len(files) != 27 or total > 2_000_000:
+              raise SystemExit(f"Public shell allowlist exceeded: files={len(files)} bytes={total}")
+          print(f"Generic shell allowlist verified: files={len(files)} bytes={total}")
+          PY
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: "22"
+
+      - name: Install exact generic native packages
+        run: npm ci --ignore-scripts --prefix app
+
+      - name: Select a stable Xcode 26 toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          XCODE_APP="$(python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          candidates = [
+              path
+              for path in Path("/Applications").glob("Xcode_26*.app")
+              if "beta" not in path.name.lower() and "rc" not in path.name.lower()
+          ]
+          if not candidates:
+              raise SystemExit("No stable Xcode 26 installation was found")
+          print(max(candidates, key=lambda path: tuple(int(x) for x in re.findall(r"\d+", path.name))))
+          PY
+          )"
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+          grep -Eq '^Xcode 26\.' <<<"$(xcodebuild -version)"
+
+      - name: Resolve the pinned Swift packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -resolvePackageDependencies \
+            -project app/ios/App/App.xcodeproj \
+            -scheme App
+          RESOLVED="$(find app/ios/App -name Package.resolved -print -quit)"
+          test -n "$RESOLVED"
+          python3 - "$RESOLVED" <<'PY'
+          import json
+          import sys
+
+          resolved = json.load(open(sys.argv[1], encoding="utf-8"))
+          pin = next(
+              item
+              for item in resolved["pins"]
+              if item["identity"] == "capacitor-swift-pm"
+          )
+          assert pin["state"]["version"] == "8.4.2"
+          assert pin["state"]["revision"] == "9b9fb0af76b2b653f6e9b999f658adc132b9ab4c"
+          PY
+
+      - name: Build and launch the generic shell in an iPad simulator
+        id: simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          UDID="$(python3 - <<'PY'
+          import json
+          import subprocess
+
+          devices = json.loads(
+              subprocess.check_output(
+                  ["xcrun", "simctl", "list", "devices", "available", "-j"],
+                  text=True,
+              )
+          )["devices"]
+          ipads = [
+              device
+              for runtime in devices.values()
+              for device in runtime
+              if device.get("isAvailable") and "iPad" in device.get("name", "")
+          ]
+          if not ipads:
+              raise SystemExit("No available iPad simulator was found")
+          preferred = next(
+              (
+                  device
+                  for device in ipads
+                  if "13-inch" in device["name"] and "M4" in device["name"]
+              ),
+              ipads[0],
+          )
+          print(preferred["udid"])
+          PY
+          )"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcodebuild \
+            -project app/ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -destination "id=$UDID" \
+            -derivedDataPath build/simulator \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+          SIM_APP="$(find build/simulator/Build/Products/Release-iphonesimulator -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$SIM_APP"
+          xcrun simctl uninstall "$UDID" com.majid.tradingplatform.ipad 2>/dev/null || true
+          xcrun simctl install "$UDID" "$SIM_APP"
+          LAUNCH_RESULT="$(xcrun simctl launch --terminate-running-process \
+            "$UDID" com.majid.tradingplatform.ipad)"
+          echo "$LAUNCH_RESULT"
+          APP_PID="${LAUNCH_RESULT##*: }"
+          test -n "$APP_PID"
+          APP_DATA="$(xcrun simctl get_app_container \
+            "$UDID" com.majid.tradingplatform.ipad data)"
+          PREFS="$APP_DATA/Library/Preferences/com.majid.tradingplatform.ipad.plist"
+          SMOKE=""
+          for attempt in {1..60}; do
+            if [[ -f "$PREFS" ]]; then
+              SMOKE="$(python3 - "$PREFS" <<'PY'
+          import plistlib
+          import sys
+
+          try:
+              with open(sys.argv[1], "rb") as stream:
+                  value = plistlib.load(stream).get(
+                      "CapacitorStorage.generic-shell-smoke-result",
+                      "",
+                  )
+          except (OSError, EOFError, plistlib.InvalidFileException):
+              value = ""
+          print(value)
+          PY
+          )"
+            fi
+            [[ "$SMOKE" == "PASS" ]] && break
+            if [[ "$SMOKE" == FAIL:* ]]; then
+              echo "Generic shell native smoke failed: $SMOKE" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$SMOKE" = "PASS"
+          xcrun simctl spawn "$UDID" /bin/kill -0 "$APP_PID"
+          xcrun simctl io "$UDID" screenshot build/generic-shell-simulator.png
+          test -s build/generic-shell-simulator.png
+
+      - name: Build and validate the unsigned physical-iPad shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project app/ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build/device \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            build
+          DEVICE_APP="$(find build/device/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$DEVICE_APP"
+          test -f "$DEVICE_APP/Info.plist"
+          test -f "$DEVICE_APP/PrivacyInfo.xcprivacy"
+          BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$DEVICE_APP/Info.plist")"
+          EXECUTABLE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$DEVICE_APP/Info.plist")"
+          MINIMUM_OS="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$DEVICE_APP/Info.plist")"
+          SUPPORTED_PLATFORM="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$DEVICE_APP/Info.plist")"
+          DEVICE_FAMILY="$(/usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily:0' "$DEVICE_APP/Info.plist")"
+          test "$BUNDLE_ID" = "com.majid.tradingplatform.ipad"
+          test "$MINIMUM_OS" = "15.0"
+          test "$SUPPORTED_PLATFORM" = "iPhoneOS"
+          test "$DEVICE_FAMILY" = "2"
+          test -f "$DEVICE_APP/$EXECUTABLE_NAME"
+          test "$(stat -f '%Lp' "$DEVICE_APP/$EXECUTABLE_NAME")" = "755"
+          lipo -archs "$DEVICE_APP/$EXECUTABLE_NAME" | grep -qw arm64
+          file "$DEVICE_APP/$EXECUTABLE_NAME" | grep -q "Mach-O 64-bit executable arm64"
+          ! find "$DEVICE_APP" -type l -print -quit | grep -q .
+          ! find "$DEVICE_APP" -name _CodeSignature -print -quit | grep -q .
+          ! find "$DEVICE_APP" -name embedded.mobileprovision -print -quit | grep -q .
+          ! find "$DEVICE_APP" -type f \( \
+            -name '*.map' -o -name '*.ts' -o -name '*.tsx' -o \
+            -name '*.mts' -o -name '*.cts' -o -name '*.jsx' -o \
+            -name '*.vue' -o -name '*.svelte' -o -name '*.scss' -o \
+            -name '*.sass' -o -name '*.less' -o -name '*.py' \
+          \) -print -quit | grep -q .
+          cmp -s "$DEVICE_APP/capacitor.config.json" \
+            app/ios/App/App/capacitor.config.json
+          cmp -s "$DEVICE_APP/config.xml" app/ios/App/App/config.xml
+          cmp -s "$DEVICE_APP/PrivacyInfo.xcprivacy" \
+            app/ios/App/App/PrivacyInfo.xcprivacy
+          plutil -lint "$DEVICE_APP/Info.plist"
+          plutil -lint "$DEVICE_APP/PrivacyInfo.xcprivacy"
+          test "$(/usr/libexec/PlistBuddy \
+            -c 'Print :NSPrivacyAccessedAPITypes:0:NSPrivacyAccessedAPIType' \
+            "$DEVICE_APP/PrivacyInfo.xcprivacy")" = "NSPrivacyAccessedAPICategoryUserDefaults"
+          test "$(/usr/libexec/PlistBuddy \
+            -c 'Print :NSPrivacyAccessedAPITypes:0:NSPrivacyAccessedAPITypeReasons:0' \
+            "$DEVICE_APP/PrivacyInfo.xcprivacy")" = "CA92.1"
+          python3 - "$DEVICE_APP/capacitor.config.json" <<'PY'
+          import json
+          import sys
+
+          config = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert config["appId"] == "com.majid.tradingplatform.ipad"
+          assert config["packageClassList"] == [
+              "KeepAwakePlugin",
+              "AppPlugin",
+              "PreferencesPlugin",
+          ]
+          assert config["plugins"]["CapacitorCookies"]["enabled"] is True
+          assert config["plugins"]["CapacitorHttp"]["enabled"] is True
+          PY
+          rm -rf build/ipa
+          mkdir -p build/ipa/Payload
+          cp -R "$DEVICE_APP" build/ipa/Payload/
+          (
+            cd build/ipa
+            ditto -c -k --keepParent Payload \
+              ../Generic-iPad-Shell-unsigned.ipa
+          )
+          unzip -t build/Generic-iPad-Shell-unsigned.ipa
+          unzip -Z1 build/Generic-iPad-Shell-unsigned.ipa \
+            | grep -Eq '^Payload/[^/]+\.app/Info\.plist$'
+          unzip -Z1 build/Generic-iPad-Shell-unsigned.ipa \
+            | grep -Eq '^Payload/[^/]+\.app/PrivacyInfo\.xcprivacy$'
+          if unzip -Z1 build/Generic-iPad-Shell-unsigned.ipa | grep -E '\.(map|ts|tsx)$'; then
+            echo "Forbidden source artifact found in shell IPA" >&2
+            exit 1
+          fi
+          python3 - build/Generic-iPad-Shell-unsigned.ipa "$EXECUTABLE_NAME" <<'PY'
+          import stat
+          import sys
+          import zipfile
+
+          ipa, executable = sys.argv[1:]
+          with zipfile.ZipFile(ipa) as archive:
+              entries = archive.infolist()
+              names = [entry.filename for entry in entries]
+              if len(names) != len(set(names)):
+                  raise SystemExit("IPA contains duplicate paths")
+              if any(not name.startswith("Payload/") for name in names):
+                  raise SystemExit("IPA contains content outside Payload")
+              roots = {
+                  "/".join(name.split("/")[:2])
+                  for name in names
+                  if len(name.split("/")) >= 2 and name.split("/")[1].endswith(".app")
+              }
+              if len(roots) != 1:
+                  raise SystemExit(f"IPA must contain exactly one app root: {sorted(roots)}")
+              app_root = next(iter(roots))
+              for entry in entries:
+                  mode = entry.external_attr >> 16
+                  if stat.S_IFMT(mode) == stat.S_IFLNK:
+                      raise SystemExit(f"IPA contains a symlink: {entry.filename}")
+              executable_entry = archive.getinfo(f"{app_root}/{executable}")
+              mode = executable_entry.external_attr >> 16
+              if stat.S_IFMT(mode) != stat.S_IFREG or stat.S_IMODE(mode) != 0o755:
+                  raise SystemExit(f"IPA executable mode is not regular 0755: {oct(mode)}")
+          PY
+          shasum -a 256 build/Generic-iPad-Shell-unsigned.ipa \
+            > build/Generic-iPad-Shell-unsigned.ipa.sha256
+
+      - name: Write the native compatibility contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+
+          def sha256(relative):
+              return hashlib.sha256(Path(relative).read_bytes()).hexdigest()
+
+          lock = json.loads(Path("app/package-lock.json").read_text())
+          packages = lock["packages"]
+          package_names = [
+              "@capacitor-community/keep-awake",
+              "@capacitor/app",
+              "@capacitor/core",
+              "@capacitor/ios",
+              "@capacitor/preferences",
+          ]
+          package_versions = {
+              name: packages[f"node_modules/{name}"]["version"]
+              for name in package_names
+          }
+          contract = {
+              "schemaVersion": 1,
+              "kind": "generic-capacitor-ios-shell",
+              "nativeContract": {
+                  "bundleIdentifier": "com.majid.tradingplatform.ipad",
+                  "minimumIOSVersion": "15.0",
+                  "deviceFamily": [2],
+                  "packages": package_versions,
+                  "packageClassList": [
+                      "AppPlugin",
+                      "KeepAwakePlugin",
+                      "PreferencesPlugin",
+                  ],
+              },
+              "shellIpaSha256": Path(
+                  "build/Generic-iPad-Shell-unsigned.ipa.sha256"
+              ).read_text().split()[0],
+              "provenance": {
+                  "repositoryCommit": os.environ["GITHUB_SHA"],
+                  "capacitorRevision": "9b9fb0af76b2b653f6e9b999f658adc132b9ab4c",
+                  "packageIntegrities": {
+                      name: packages[f"node_modules/{name}"]["integrity"]
+                      for name in package_names
+                  },
+                  "criticalSourceSha256": {
+                      relative: sha256(relative)
+                      for relative in [
+                          "app/package-lock.json",
+                          "app/ios/App/App.xcodeproj/project.pbxproj",
+                          "app/ios/App/App/AppDelegate.swift",
+                          "app/ios/App/App/Info.plist",
+                          "app/ios/App/App/PrivacyInfo.xcprivacy",
+                          "app/ios/App/App/capacitor.config.json",
+                          "app/ios/App/CapApp-SPM/Package.swift",
+                      ]
+                  },
+              },
+          }
+          Path("build/native-contract.json").write_text(
+              json.dumps(contract, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload the generic shell proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: generic-ipad-shell
+          path: |
+            build/Generic-iPad-Shell-unsigned.ipa
+            build/Generic-iPad-Shell-unsigned.ipa.sha256
+            build/native-contract.json
+            build/generic-shell-simulator.png
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
