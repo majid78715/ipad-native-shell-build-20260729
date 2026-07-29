@@ -303,9 +303,6 @@ jobs:
             )
             IPA="build/artifacts/Generic-iPad-Shell-unsigned.ipa"
             unzip -t "$IPA"
-            unzip -Z1 "$IPA" | grep -Eq '^Payload/[^/]+\.app/Info\.plist$'
-            unzip -Z1 "$IPA" \
-              | grep -Eq '^Payload/[^/]+\.app/PrivacyInfo\.xcprivacy$'
             if unzip -Z1 "$IPA" | grep -E '\.(map|ts|tsx)$'; then
               echo "Forbidden source artifact found in shell IPA" >&2
               exit 1
@@ -334,6 +331,25 @@ jobs:
                         f"IPA must contain exactly one app root: {sorted(roots)}"
                     )
                 app_root = next(iter(roots))
+                unexpected = sorted(
+                    name
+                    for name in names
+                    if name != "Payload/"
+                    and not name.startswith(f"{app_root}/")
+                )
+                if unexpected:
+                    raise SystemExit(
+                        f"IPA contains content outside its app root: {unexpected}"
+                    )
+                required = {
+                    f"{app_root}/Info.plist",
+                    f"{app_root}/PrivacyInfo.xcprivacy",
+                }
+                missing = sorted(required - set(names))
+                if missing:
+                    raise SystemExit(
+                        f"IPA is missing required native metadata: {missing}"
+                    )
                 for entry in entries:
                     mode = entry.external_attr >> 16
                     if stat.S_IFMT(mode) == stat.S_IFLNK:
