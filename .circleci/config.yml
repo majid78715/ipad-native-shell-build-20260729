@@ -211,7 +211,7 @@ jobs:
               sleep 1
             done
             test "$SMOKE" = "PASS"
-            xcrun simctl spawn "$UDID" /bin/kill -0 "$APP_PID"
+            kill -0 "$APP_PID"
             xcrun simctl io "$UDID" screenshot \
               build/artifacts/generic-shell-simulator.png
             test -s build/artifacts/generic-shell-simulator.png
