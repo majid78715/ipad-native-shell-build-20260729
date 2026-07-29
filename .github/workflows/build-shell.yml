@@ -35,6 +35,7 @@ jobs:
           ).decode().split("\0")
           files = [path for path in files if path]
           allowed_exact = {
+              ".circleci/config.yml",
               ".github/workflows/build-shell.yml",
               ".gitignore",
               "README.md",
@@ -84,7 +85,7 @@ jobs:
               missing = sorted(allowed_exact - set(files))
               extra = sorted(set(files) - allowed_exact)
               raise SystemExit(f"Public shell allowlist mismatch: missing={missing} extra={extra}")
-          if len(files) != 27 or total > 2_000_000:
+          if len(files) != 28 or total > 2_000_000:
               raise SystemExit(f"Public shell allowlist exceeded: files={len(files)} bytes={total}")
           print(f"Generic shell allowlist verified: files={len(files)} bytes={total}")
           PY
