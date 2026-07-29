@@ -17,7 +17,7 @@ jobs:
           name: Prove repository contains only the generic native shell
           command: |
             set -euo pipefail
-            python3 - <<'PY'
+            python3 - \<<'PY'
             from pathlib import Path
             import subprocess
 
@@ -90,7 +90,7 @@ jobs:
           command: |
             set -euo pipefail
             xcodebuild -version
-            grep -Eq '^Xcode 26\.4' <<<"$(xcodebuild -version)"
+            xcodebuild -version | grep -Eq '^Xcode 26\.4'
             nvm install 22
             nvm use 22
             node --version
@@ -108,7 +108,7 @@ jobs:
               -scheme App
             RESOLVED="$(find app/ios/App -name Package.resolved -print -quit)"
             test -n "$RESOLVED"
-            python3 - "$RESOLVED" <<'PY'
+            python3 - "$RESOLVED" \<<'PY'
             import json
             import sys
 
@@ -127,7 +127,7 @@ jobs:
           command: |
             set -euo pipefail
             mkdir -p build/artifacts
-            UDID="$(python3 - <<'PY'
+            UDID="$(python3 - \<<'PY'
             import json
             import subprocess
 
@@ -183,7 +183,7 @@ jobs:
             SMOKE=""
             for attempt in {1..60}; do
               if [[ -f "$PREFS" ]]; then
-                SMOKE="$(python3 - "$PREFS" <<'PY'
+                SMOKE="$(python3 - "$PREFS" \<<'PY'
             import plistlib
             import sys
 
@@ -275,7 +275,7 @@ jobs:
             test "$(/usr/libexec/PlistBuddy \
               -c 'Print :NSPrivacyAccessedAPITypes:0:NSPrivacyAccessedAPITypeReasons:0' \
               "$DEVICE_APP/PrivacyInfo.xcprivacy")" = "CA92.1"
-            python3 - "$DEVICE_APP/capacitor.config.json" <<'PY'
+            python3 - "$DEVICE_APP/capacitor.config.json" \<<'PY'
             import json
             import sys
 
@@ -306,7 +306,7 @@ jobs:
               echo "Forbidden source artifact found in shell IPA" >&2
               exit 1
             fi
-            python3 - "$IPA" "$EXECUTABLE_NAME" <<'PY'
+            python3 - "$IPA" "$EXECUTABLE_NAME" \<<'PY'
             import stat
             import sys
             import zipfile
@@ -355,7 +355,7 @@ jobs:
           name: Write the injector-canonical native contract
           command: |
             set -euo pipefail
-            python3 - <<'PY'
+            python3 - \<<'PY'
             from pathlib import Path
             import hashlib
             import json
