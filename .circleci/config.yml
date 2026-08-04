@@ -3,7 +3,10 @@ version: 2.1
 parameters:
   run_build:
     type: boolean
-    default: false
+    default: true
+  source_commit:
+    type: string
+    default: "8fc7f1533a9bb9a31b2a9e74c6821f1cec72d528"
 
 jobs:
   build-generic-ipad-shell:
@@ -101,6 +104,15 @@ jobs:
             node --version | grep -Eq '^v22\.'
             npm --version
             npm ci --ignore-scripts --prefix app
+            SOURCE_COMMIT='<< pipeline.parameters.source_commit >>'
+            [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+            PLIST="app/ios/App/App/Info.plist"
+            /usr/libexec/PlistBuddy -c "Delete :TradingPlatformSourceCommit" "$PLIST" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :TradingPlatformSourceCommit string $SOURCE_COMMIT" "$PLIST"
+            /usr/libexec/PlistBuddy -c "Delete :TradingPlatformNativeLaunchVersion" "$PLIST" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :TradingPlatformNativeLaunchVersion string trading-platform-native-launch-v1" "$PLIST"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :TradingPlatformSourceCommit' "$PLIST")" = "$SOURCE_COMMIT"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :TradingPlatformNativeLaunchVersion' "$PLIST")" = "trading-platform-native-launch-v1"
 
       - run:
           name: Resolve and verify pinned Swift packages
@@ -180,7 +192,7 @@ jobs:
               "$UDID" com.majid.tradingplatform.ipad)"
             echo "$LAUNCH_RESULT"
             APP_PID="${LAUNCH_RESULT##*: }"
-            test -n "$APP_PID"
+            [[ "$APP_PID" =~ ^[0-9]+$ ]]
             APP_DATA="$(xcrun simctl get_app_container \
               "$UDID" com.majid.tradingplatform.ipad data)"
             PREFS="$APP_DATA/Library/Preferences/com.majid.tradingplatform.ipad.plist"
@@ -211,7 +223,12 @@ jobs:
               sleep 1
             done
             test "$SMOKE" = "PASS"
-            kill -0 "$APP_PID"
+            SIM_PROCINFO="$PWD/build/artifacts/generic-shell-simulator-procinfo.txt"
+            xcrun simctl spawn "$UDID" launchctl procinfo "$APP_PID" > "$SIM_PROCINFO" 2>&1
+            SIM_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$SIM_APP/Info.plist")"
+            SIM_BUNDLE="$(basename "$SIM_APP")"
+            test -n "$SIM_EXECUTABLE"
+            grep -Fq "/$SIM_BUNDLE/$SIM_EXECUTABLE" "$SIM_PROCINFO"
             SCREENSHOT="$PWD/build/artifacts/generic-shell-simulator.png"
             mkdir -p "$(dirname "$SCREENSHOT")"
             xcrun simctl io "$UDID" screenshot "$SCREENSHOT"
@@ -247,15 +264,25 @@ jobs:
               -c 'Print :CFBundleSupportedPlatforms:0' "$DEVICE_APP/Info.plist")"
             DEVICE_FAMILY="$(/usr/libexec/PlistBuddy \
               -c 'Print :UIDeviceFamily:0' "$DEVICE_APP/Info.plist")"
+            SOURCE_COMMIT="$(/usr/libexec/PlistBuddy \
+              -c 'Print :TradingPlatformSourceCommit' "$DEVICE_APP/Info.plist")"
+            NATIVE_LAUNCH_VERSION="$(/usr/libexec/PlistBuddy \
+              -c 'Print :TradingPlatformNativeLaunchVersion' "$DEVICE_APP/Info.plist")"
             test "$BUNDLE_ID" = "com.majid.tradingplatform.ipad"
             test "$MINIMUM_OS" = "15.0"
             test "$SUPPORTED_PLATFORM" = "iPhoneOS"
             test "$DEVICE_FAMILY" = "2"
+            test "$SOURCE_COMMIT" = '<< pipeline.parameters.source_commit >>'
+            test "$NATIVE_LAUNCH_VERSION" = "trading-platform-native-launch-v1"
             test -f "$DEVICE_APP/$EXECUTABLE_NAME"
             test "$(stat -f '%Lp' "$DEVICE_APP/$EXECUTABLE_NAME")" = "755"
             lipo -archs "$DEVICE_APP/$EXECUTABLE_NAME" | grep -qw arm64
             file "$DEVICE_APP/$EXECUTABLE_NAME" \
               | grep -q "Mach-O 64-bit executable arm64"
+            strings "$DEVICE_APP/$EXECUTABLE_NAME" > build/artifacts/device-binary.strings
+            grep -Fq "CapacitorStorage.trading-platform:ipadLaunchSession" build/artifacts/device-binary.strings
+            grep -Fq "CapacitorStorage.trading-platform:ipadLaunchSessionVersion" build/artifacts/device-binary.strings
+            grep -Fq "trading-platform-native-launch-v1" build/artifacts/device-binary.strings
             ! find "$DEVICE_APP" -type l -print -quit | grep -q .
             ! find "$DEVICE_APP" -name _CodeSignature -print -quit | grep -q .
             ! find "$DEVICE_APP" -name embedded.mobileprovision \
@@ -417,6 +444,8 @@ jobs:
                 ).read_text().split()[0],
                 "provenance": {
                     "repositoryCommit": os.environ["CIRCLE_SHA1"],
+                    "embeddedSourceSha": "<< pipeline.parameters.source_commit >>",
+                    "nativeLaunchMarker": "trading-platform-native-launch-v1",
                     "builder": "circleci-xcode-26.4.1",
                     "capacitorRevision": (
                         "9b9fb0af76b2b653f6e9b999f658adc132b9ab4c"

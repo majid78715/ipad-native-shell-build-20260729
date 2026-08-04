@@ -5,9 +5,16 @@ import Capacitor
 class AppDelegate: UIResponder, UIApplicationDelegate {
 
     var window: UIWindow?
+    private let signalLaunchDefaultsKey = "CapacitorStorage.trading-platform:ipadLaunchSession"
+    private let signalLaunchVersionDefaultsKey = "CapacitorStorage.trading-platform:ipadLaunchSessionVersion"
+    private let signalLaunchVersionMarker = "trading-platform-native-launch-v1"
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Override point for customization after application launch.
+        // One UUID per native process launch. Capacitor Preferences reads this
+        // exact UserDefaults key before React starts, so background/foreground
+        // keeps the session while a force-quit and cold relaunch replaces it.
+        UserDefaults.standard.set(UUID().uuidString, forKey: signalLaunchDefaultsKey)
+        UserDefaults.standard.set(signalLaunchVersionMarker, forKey: signalLaunchVersionDefaultsKey)
         return true
     }
 
