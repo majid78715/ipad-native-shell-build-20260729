@@ -6,7 +6,7 @@ parameters:
     default: true
   source_commit:
     type: string
-    default: "8fc7f1533a9bb9a31b2a9e74c6821f1cec72d528"
+    default: "7fb110867754c589bc091bc6d19780d16ca58332"
 
 jobs:
   build-generic-ipad-shell:
